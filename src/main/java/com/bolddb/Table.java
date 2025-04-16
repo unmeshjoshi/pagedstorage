@@ -1,15 +1,11 @@
 package com.bolddb;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.nio.file.Files;
 import java.nio.file.Path;
+
+
 import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.nio.channels.FileChannel;
 
 /**
  * A simple table implementation that stores rows in memory and uses a single Page
@@ -17,25 +13,74 @@ import java.util.Map;
  */
 public class Table {
     private final String name;
-    private final Page page;           // Single page for storage
+    private final Path tablePath;
+    private int totalPages; // Total number of pages in the table
+    // Holds only modified pages
+    private final java.util.Map<Integer, Page> dirtyPages = new java.util.HashMap<>();
     
     /**
-     * Creates a new table with the specified name and file path.
+     * Creates a new table with the specified name in the given directory.
+     * The table data will be stored in a file named {tableName}.table
      * 
      * @param name The name of the table
+     * @param baseDirectory The directory where the table file will be stored
      * @throws IOException If an I/O error occurs
      */
-    public Table(String name) throws IOException {
+    public Table(String name, Path baseDirectory) throws IOException {
         this.name = name;
+        this.tablePath = baseDirectory.resolve(name + ".table");
+        java.nio.file.Files.createDirectories(baseDirectory);
 
-        
-        // Create a page for the table regardless of whether file exists
-        this.page = new Page(0);
+        if (!java.nio.file.Files.exists(tablePath)) {
+            setupFirstPageInMemory();
+            return;
+        }
+        this.totalPages = getTotalPagesFromFile();
+    }
 
+    /**
+     * Returns the total number of pages in the table file based on its size.
+     */
+    private int getTotalPagesFromFile() throws IOException {
+        long fileSize = java.nio.file.Files.size(tablePath);
+        return (fileSize > 0) ? (int) (fileSize / Page.PAGE_SIZE) : 0;
+    }
+
+    /**
+     * Prepares the first page in memory for a new or empty table,
+     * marks it as dirty, and sets totalPages to 1.
+     */
+    private void setupFirstPageInMemory() {
+        assert totalPages == 0 : "setupFirstPageInMemory should only be called when there are no pages";
+        Page firstPage = new Page(0);
+        dirtyPages.put(0, firstPage);
+        totalPages = 1;
     }
 
     public String getName() {
         return name;
+    }
+
+    /**
+     * Gets a page from the cache or loads it from disk if not present.
+     * 
+     * @param pageId The ID of the page to get
+     * @return The requested page
+     * @throws IOException If an I/O error occurs
+     */
+    private Page getPage(int pageId) throws IOException {
+        // Check if page is dirty (modified but not yet saved)
+        Page page = dirtyPages.get(pageId);
+        if (page != null) {
+            return page;
+        }
+        // Otherwise, read directly from file
+        try (FileChannel channel = FileChannel.open(tablePath, StandardOpenOption.READ)) {
+            Page.ensurePageExists(channel, pageId);
+            page = new Page(pageId);
+            page.readFrom(channel);
+            return page;
+        }
     }
 
     /**
@@ -46,50 +91,103 @@ public class Table {
      * @throws IOException If an I/O error occurs
      */
     public boolean insert(Row row) throws IOException {
-        System.out.println("Inserting row with key: " + row.getPrimaryKey());
-        
-        // Serialize the row and store in page
-        byte[] keyBytes = row.getPrimaryKey().getBytes();
-        byte[] valueBytes = row.serialize();
-        
-        System.out.println("Serialized row size - Key: " + keyBytes.length + 
-                " bytes, Value: " + valueBytes.length + " bytes");
-        System.out.println("Page free space: " + page.freeSpace() + " bytes");
-        
-        // Check if there's enough space
-        int requiredSpace = keyBytes.length + valueBytes.length + 8; // 8 for slot
-        if (requiredSpace > page.freeSpace()) {
-            System.out.println("Not enough space in page. Required: " + requiredSpace + 
-                    ", Available: " + page.freeSpace());
-            return false; // Not enough space to insert
+        logInsertAttempt(row);
+        byte[] keyBytes = serializeKey(row);
+        byte[] valueBytes = serializeValue(row);
+        Page currentPage = findOrCreatePage(keyBytes, valueBytes);
+        boolean success = currentPage.put(keyBytes, valueBytes);
+        if (success) {
+            markPageDirty(currentPage);
         }
-        
-        // Insert into the page
-        boolean success = page.put(keyBytes, valueBytes);
-        System.out.println("Insert " + (success ? "succeeded" : "failed"));
-
+        logInsertResult(success);
         return success;
     }
 
-    public Row get(String primaryKey) throws IOException {
-        System.out.println("Getting row with key: " + primaryKey);
-        
-        // If not in memory, try to find in the page
-        byte[] keyBytes = primaryKey.getBytes();
-        byte[] valueBytes = page.get(keyBytes);
-        
-        if (valueBytes != null) {
-            System.out.println("Found row in page. Value size: " + valueBytes.length + " bytes");
-            Row loadedRow = Row.deserialize(valueBytes);
-            return loadedRow;
+    // --- Helper methods for insert ---
+    private void logInsertAttempt(Row row) {
+        System.out.println("Inserting row with key: " + java.util.Arrays.toString(row.getPrimaryKey()));
+    }
+
+    private byte[] serializeKey(Row row) {
+        return row.getPrimaryKey();
+    }
+
+    private byte[] serializeValue(Row row) {
+        byte[] valueBytes = row.serialize();
+        System.out.println("Serialized row size - Key: " + row.getPrimaryKey().length +
+                " bytes, Value: " + valueBytes.length + " bytes");
+        return valueBytes;
+    }
+
+    private Page findOrCreatePage(byte[] keyBytes, byte[] valueBytes) throws IOException {
+        assert totalPages > 0 : "There must be at least one page in the table";
+        int requiredSpace = keyBytes.length + valueBytes.length + 8; // 8 for slot
+        Page currentPage = getPage(totalPages - 1); // Get the last page
+        System.out.println("Page free space: " + currentPage.freeSpace() + " bytes");
+        if (requiredSpace > currentPage.freeSpace()) {
+            System.out.println("Not enough space in current page. Creating new page.");
+            Page newPage = new Page(totalPages);
+            dirtyPages.put(totalPages, newPage);
+            totalPages++;
+            return newPage;
         }
-        
-        System.out.println("Row not found in page");
-        return null;  // Not found
+        return currentPage;
+    }
+
+    private void markPageDirty(Page page) {
+        dirtyPages.put((int) page.header.pageId(), page);
+    }
+
+    private void logInsertResult(boolean success) {
+        System.out.println("Insert " + (success ? "succeeded" : "failed"));
+    }
+
+    public Row get(byte[] primaryKey) throws IOException {
+        System.out.println("Getting row with key: " + java.util.Arrays.toString(primaryKey));
+        // Search through all pages
+        for (int i = 0; i < totalPages; i++) {
+            Page page = getPage(i);
+            byte[] valueBytes = page.get(primaryKey);
+            if (valueBytes != null) {
+                return Row.deserialize(valueBytes);
+            }
+        }
+        return null;
     }
 
     public int size() {
-        return page.count();
-    }
+        int total = 0;
+        for (int i = 0; i < totalPages; i++) {
+            try {
+                total += getPage(i).count();
+            } catch (IOException e) {
+                // Log error but continue
+                System.err.println("Error getting page " + i + ": " + e.getMessage());
+            }
+        }
+        return total;
+    } // This logic is unchanged, but now getPage reads directly from file or dirty set.
 
+    /**
+     * Saves all pages to the file.
+     * 
+     * @throws IOException If an I/O error occurs
+     */
+    public void save() throws IOException {
+        try (FileChannel channel = FileChannel.open(tablePath, 
+                StandardOpenOption.WRITE, 
+                StandardOpenOption.CREATE, 
+                StandardOpenOption.TRUNCATE_EXISTING)) {
+            // Write all pages, using dirtyPages if available, otherwise reading from file
+            for (int i = 0; i < totalPages; i++) {
+                Page page = dirtyPages.get(i);
+                if (page == null) {
+                    // Not dirty, read from file
+                    page = getPage(i);
+                }
+                page.writeTo(channel);
+            }
+            dirtyPages.clear(); // All changes saved
+        }
+    }
 }

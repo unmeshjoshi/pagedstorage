@@ -16,23 +16,23 @@ import java.util.Map;
 public class Row {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     
-    private final String primaryKey;
+    private final byte[] primaryKey;
     private final Map<String, Object> attributes;
 
-    public Row(String primaryKey) {
+    public Row(byte[] primaryKey) {
         this.primaryKey = primaryKey;
         this.attributes = new HashMap<>();
     }
 
     @JsonCreator
     public Row(
-            @JsonProperty("primaryKey") String primaryKey, 
+            @JsonProperty("primaryKey") byte[] primaryKey,
             @JsonProperty("attributes") Map<String, Object> attributes) {
         this.primaryKey = primaryKey;
         this.attributes = new HashMap<>(attributes);
     }
 
-    public String getPrimaryKey() {
+    public byte[] getPrimaryKey() {
         return primaryKey;
     }
 
@@ -77,6 +77,6 @@ public class Row {
     
     @Override
     public String toString() {
-        return "Row{primaryKey='" + primaryKey + "', attributes=" + attributes + "}";
+        return "Row{primaryKey=" + java.util.Arrays.toString(primaryKey) + ", attributes=" + attributes + "}";
     }
 } 

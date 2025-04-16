@@ -368,4 +368,37 @@ public class Page {
     public short count() {
         return header.count();
     }
+
+    /**
+     * Reads the page data from a file channel at the correct offset based on pageId.
+     * This method does not change the FileChannel's position.
+     *
+     * @param fileChannel The file channel to read from
+     * @throws IOException If an I/O error occurs
+     */
+    public void readFrom(FileChannel fileChannel) throws IOException {
+        long position = getPageId() * PAGE_SIZE;
+        buffer.clear();
+        int totalRead = 0;
+        while (totalRead < PAGE_SIZE) {
+            int read = fileChannel.read(buffer, position + totalRead);
+            if (read < 0) {
+                throw new IOException("Failed to read entire page: EOF reached");
+            }
+            totalRead += read;
+        }
+        buffer.flip();
+    }
+
+    /**
+     * Static helper to ensure a page exists in the file and return its offset.
+     * Throws IOException if the page does not exist.
+     */
+    public static long ensurePageExists(FileChannel channel, int pageId) throws IOException {
+        long position = (long) pageId * PAGE_SIZE;
+        if (position >= channel.size()) {
+            throw new IOException("Page " + pageId + " does not exist");
+        }
+        return position;
+    }
 }
