@@ -63,16 +63,17 @@ public class Page {
     private static final int SLOT_REGION_START_OFFSET = PageHeader.headerSize();
 
     public int slotRegionEndOffset() {
-        return SLOT_REGION_START_OFFSET + header.count() * SLOT_SIZE;
+        return SLOT_REGION_START_OFFSET + slotRegion.getSlotCount() * SLOT_SIZE;
     }
-    ByteBuffer buffer;
-    private int dataStart;
-
+    private final ByteBuffer buffer;
+    private final SlotRegion slotRegion;
+    private final DataRegion dataRegion;
     final PageHeader header;
     public Page(int pageId) {
         this.buffer = ByteBuffer.allocate(PAGE_SIZE);
         header = PageHeader.forLeafPage(buffer, pageId);
-        this.dataStart = PAGE_SIZE; // Data area starts at the end of the page
+        this.slotRegion = new SlotRegion(buffer, PageHeader.headerSize(), SLOT_SIZE, header);
+        this.dataRegion = new DataRegion(buffer, PAGE_SIZE);
         
         System.out.println("Created new Page with ID: " + pageId);
         System.out.println("  Page size: " + PAGE_SIZE + " bytes");
@@ -251,102 +252,47 @@ public class Page {
     }
 
     public int freeSpace() {
-        return dataStart - slotRegionEndOffset();
+        return dataRegion.getDataStart() - slotRegionEndOffset();
     }
 
     public boolean put(byte[] keyBytes, byte[] valueBytes) {
-        // Calculate required space
         int requiredSpace = keyBytes.length + valueBytes.length + SLOT_SIZE;
-        
-        System.out.println("Putting key-value pair - Key: " + new String(keyBytes) + 
-                " (" + keyBytes.length + " bytes), Value: " + valueBytes.length + " bytes");
+        System.out.println("Putting key-value pair - Key: " + new String(keyBytes) + " (" + keyBytes.length + " bytes), Value: " + valueBytes.length + " bytes");
         System.out.println("  Required space: " + requiredSpace + " bytes");
         System.out.println("  Available free space: " + freeSpace() + " bytes");
-        System.out.println("  Current data start: " + dataStart);
+        System.out.println("  Current data start: " + dataRegion.getDataStart());
         System.out.println("  Current slot end: " + slotRegionEndOffset());
 
-        // Check if there's enough free space
         if (requiredSpace > freeSpace()) {
             System.out.println("  Not enough space, returning false");
-            return false; // Not enough space
+            return false;
         }
 
-        // Calculate where to store data
-        dataStart -= keyBytes.length + valueBytes.length;
-        
-        System.out.println("  Storing data at offset: " + dataStart);
-        System.out.println("  Slot offset: " + (SLOT_REGION_START_OFFSET + header.count() * SLOT_SIZE));
-
-        // Store slot information
-        buffer.putInt(SLOT_REGION_START_OFFSET + header.count() * SLOT_SIZE, dataStart);
-        buffer.putShort(SLOT_REGION_START_OFFSET + header.count() * SLOT_SIZE + SLOT_KEY_SIZE_POS, (short) keyBytes.length);
-        buffer.putShort(SLOT_REGION_START_OFFSET + header.count() * SLOT_SIZE + SLOT_VALUE_SIZE_POS, (short) valueBytes.length);
-
-        // Store actual data
-        buffer.position(dataStart);
-        buffer.put(keyBytes);
-        buffer.put(valueBytes);
-
-        // Increment count
-        short existingCount = header.count();
-        header.count((short) (existingCount + 1));
-        
+        // 1. Write data
+        int recordOffset = dataRegion.allocateRecord(keyBytes.length + valueBytes.length);
+        dataRegion.writeRecord(recordOffset, keyBytes, valueBytes);
+        // 2. Write slot
+        slotRegion.writeSlot(slotRegion.getSlotCount(), recordOffset, keyBytes.length, valueBytes.length);
+        // 3. Increment count (header) LAST for crash safety
+        slotRegion.incrementCount();
         System.out.println("  Insert complete, new count: " + header.count());
         System.out.println("  New free space: " + freeSpace() + " bytes");
         return true;
     }
 
     public byte[] get(byte[] key) {
-        // Validate input
         if (key == null) {
             throw new IllegalArgumentException("Key cannot be null");
         }
-
         System.out.println("Searching for key with length: " + key.length);
-        System.out.println("Page has " + header.count() + " entries");
+        System.out.println("Page has " + slotRegion.getSlotCount() + " entries");
         System.out.println("Page free space: " + freeSpace());
-
-        // Linear search through all slots
-        for (int i = 0; i < header.count(); i++) {
-            int slotOffset = PageHeader.headerSize() + (i * SLOT_SIZE);
-            
-            System.out.println("Slot " + i + " offset: " + slotOffset);
-            
-            int dataOffset = buffer.getInt(slotOffset + SLOT_OFFSET_POS);
-            short keySize = buffer.getShort(slotOffset + SLOT_KEY_SIZE_POS);
-            short valueSize = buffer.getShort(slotOffset + SLOT_VALUE_SIZE_POS);
-            
-            System.out.println("  Data offset: " + dataOffset + ", key size: " + keySize + ", value size: " + valueSize);
-
-            // Read the key
-            byte[] currentKey = new byte[keySize];
-            try {
-                buffer.get(dataOffset, currentKey);
-            } catch (Exception e) {
-                System.out.println("  Error reading key: " + e.getMessage());
-                e.printStackTrace();
-                continue;
-            }
-
-            // Compare with our target key
-            System.out.println("currentKey = " + new String(currentKey));
-            System.out.println("key = " + new String(key));
-            if (compareKeys(key, currentKey) == 0) {
-                // Found the key, return the value
-                byte[] value = new byte[valueSize];
-                try {
-                    buffer.get(dataOffset + keySize, value);
-                    return value;
-                } catch (Exception e) {
-                    System.out.println("  Error reading value: " + e.getMessage());
-                    e.printStackTrace();
-                    return null;
-                }
-            }
-        }
-
-        // Key not found
-        return null;
+        int slotIdx = slotRegion.findSlotForKey(key, dataRegion);
+        if (slotIdx == -1) return null;
+        int offset = slotRegion.getOffset(slotIdx);
+        int keySize = slotRegion.getKeySize(slotIdx);
+        int valueSize = slotRegion.getValueSize(slotIdx);
+        return dataRegion.readValue(offset, keySize, valueSize);
     }
 
     private int compareKeys(byte[] a, byte[] b) {
