@@ -36,6 +36,9 @@ public class Table {
             return;
         }
         this.totalPages = getTotalPagesFromFile();
+        if (this.totalPages == 0) {
+            setupFirstPageInMemory();
+        }
     }
 
     /**
@@ -69,6 +72,12 @@ public class Table {
      * @throws IOException If an I/O error occurs
      */
     private Page getPage(int pageId) throws IOException {
+        System.out.println("[DEBUG] getPage called for pageId: " + pageId);
+        if (pageId < 0 || pageId >= totalPages) {
+            throw new IOException("Invalid pageId: " + pageId + " (totalPages=" + totalPages + ")");
+        }
+        // Track page access for benchmarking
+
         // Check if page is dirty (modified but not yet saved)
         Page page = dirtyPages.get(pageId);
         if (page != null) {
@@ -125,7 +134,10 @@ public class Table {
         Page currentPage = getPage(totalPages - 1); // Get the last page
         System.out.println("Page free space: " + currentPage.freeSpace() + " bytes");
         if (requiredSpace > currentPage.freeSpace()) {
-            System.out.println("Not enough space in current page. Creating new page.");
+            System.out.println("Not enough space in current page. Flushing full page to disk and creating new page.");
+            savePage(currentPage);
+            dirtyPages.clear(); // Only keep the new page in memory
+            System.out.println("Creating new page.");
             Page newPage = new Page(totalPages);
             dirtyPages.put(totalPages, newPage);
             totalPages++;
@@ -142,17 +154,30 @@ public class Table {
         System.out.println("Insert " + (success ? "succeeded" : "failed"));
     }
 
-    public Row get(byte[] primaryKey) throws IOException {
+    public static class GetResult {
+        public final Row row;
+        public final int pagesAccessed;
+        public GetResult(Row row, int pagesAccessed) {
+            this.row = row;
+            this.pagesAccessed = pagesAccessed;
+        }
+    }
+
+    public GetResult get(byte[] primaryKey) throws IOException {
+        int pagesAccessed = 0;
         System.out.println("Getting row with key: " + java.util.Arrays.toString(primaryKey));
-        // Search through all pages
         for (int i = 0; i < totalPages; i++) {
+            pagesAccessed++;
+            System.out.println("[DEBUG] Accessing page ID: " + i);
             Page page = getPage(i);
             byte[] valueBytes = page.get(primaryKey);
             if (valueBytes != null) {
-                return Row.deserialize(valueBytes);
+                System.out.println("[DEBUG] Key found in page ID: " + i);
+                return new GetResult(Row.deserialize(valueBytes), pagesAccessed);
             }
         }
-        return null;
+        System.out.println("[DEBUG] Key not found in any page");
+        return new GetResult(null, pagesAccessed);
     }
 
     public int size() {
@@ -174,20 +199,28 @@ public class Table {
      * @throws IOException If an I/O error occurs
      */
     public void save() throws IOException {
-        try (FileChannel channel = FileChannel.open(tablePath, 
-                StandardOpenOption.WRITE, 
-                StandardOpenOption.CREATE, 
-                StandardOpenOption.TRUNCATE_EXISTING)) {
-            // Write all pages, using dirtyPages if available, otherwise reading from file
-            for (int i = 0; i < totalPages; i++) {
+        try (FileChannel channel = FileChannel.open(tablePath,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE)) {
+            for (Integer i : dirtyPages.keySet()) {
                 Page page = dirtyPages.get(i);
-                if (page == null) {
-                    // Not dirty, read from file
-                    page = getPage(i);
-                }
                 page.writeTo(channel);
             }
-            dirtyPages.clear(); // All changes saved
+            System.out.println("Total pages written = " + totalPages);
+            dirtyPages.clear(); // Only after all pages are written
         }
+    }
+    // Immediately flushes a single page to disk at its correct offset.
+    private void savePage(Page page) throws IOException {
+        try (FileChannel channel = FileChannel.open(tablePath, StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+            page.writeTo(channel);
+        }
+    }
+
+    /**
+     * Returns the total number of pages in the table.
+     */
+    public int getTotalPages() {
+        return totalPages;
     }
 }

@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'application'
 }
 
 java {
@@ -22,4 +23,56 @@ dependencies {
 
 test {
     useJUnitPlatform()
+}
+
+
+application {
+  mainClass.set('com.bolddb.TableBenchmark')
+  applicationDefaultJvmArgs = [
+    '-Xmx2G',
+    '-XX:+HeapDumpOnOutOfMemoryError',
+    '-XX:+ExitOnOutOfMemoryError',              // ← new
+    "-XX:HeapDumpPath=${buildDir}/heapdumps",
+    "-Xlog:gc*:file=${buildDir}/heapdumps/gc.log"
+  ]
+}
+
+tasks.register('prepareHeapDumps') {
+  doLast { file("$buildDir/heapdumps").mkdirs() }
+}
+tasks.named('run') {
+  dependsOn 'prepareHeapDumps'
+}
+
+import org.gradle.api.tasks.JavaExec
+
+// -------------------------------------------------------------
+// 1) A custom "benchmark" JavaExec that will definitely get
+//    your heap‑dump flags
+// -------------------------------------------------------------
+tasks.register('benchmark', JavaExec) {
+    group = 'benchmark'
+    description = 'Run TableBenchmark with heap‑dump on OOME'
+
+    // point to your main class
+    mainClass.set('com.bolddb.TableBenchmark')
+
+    // use the runtime classpath of the main source set
+    classpath = sourceSets.main.runtimeClasspath
+
+    // JVM flags you need
+    jvmArgs = [
+        '-Xmx128m',
+        '-XX:+HeapDumpOnOutOfMemoryError',
+        "-XX:HeapDumpPath=${buildDir}/heapdumps",
+        "-Xlog:gc*:file=${buildDir}/heapdumps/gc.log"
+    ]
+
+    // ensure the dump folder exists, and print what we’re doing
+    doFirst {
+        file("$buildDir/heapdumps").mkdirs()
+        println ">>> [benchmark] Executable: $executable"
+        println ">>> [benchmark] Working dir: $workingDir"
+        println ">>> [benchmark] JVM args: $jvmArgs"
+    }
 }

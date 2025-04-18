@@ -27,10 +27,13 @@ public class DataRegion {
     }
 
     public boolean keyEquals(int offset, byte[] key, int keySize) {
-        for (int i = 0; i < keySize; i++) {
-            if (buffer.get(offset + i) != key[i]) return false;
+        byte[] actualKey = new byte[keySize];
+        buffer.get(offset, actualKey);
+        boolean matches = Arrays.equals(actualKey, key);
+        if (matches) {
+            System.out.println(new String(key) + "matches = " + new String(actualKey));
         }
-        return true;
+        return matches;
     }
 
     public byte[] readValue(int offset, int keySize, int valueSize) {

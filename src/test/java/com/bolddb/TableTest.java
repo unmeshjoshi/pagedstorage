@@ -55,13 +55,15 @@ public class TableTest {
         assertEquals(2, customerTable.size());
         
         // Retrieve rows
-        Row retrievedCustomer1 = customerTable.get("1001".getBytes()); // This will need to be updated if get expects byte[]
+        Table.GetResult result1 = customerTable.get("1001".getBytes());
+        Row retrievedCustomer1 = result1.row; // This will need to be updated if get expects byte[]
         assertNotNull(retrievedCustomer1);
         assertEquals("John Doe", retrievedCustomer1.getAttribute("name"));
         assertEquals("john@example.com", retrievedCustomer1.getAttribute("email"));
         assertEquals(30, retrievedCustomer1.getAttribute("age"));
         
-        Row retrievedCustomer2 = customerTable.get("1002".getBytes());
+        Table.GetResult result2 = customerTable.get("1002".getBytes());
+        Row retrievedCustomer2 = result2.row;
         assertNotNull(retrievedCustomer2);
         assertEquals("Jane Smith", retrievedCustomer2.getAttribute("name"));
     }
@@ -96,7 +98,8 @@ public class TableTest {
         // Verify we can read back all the rows
         for (int i = 0; i < totalRowsToInsert; i++) {
             String key = "key" + i;
-            Row retrievedRow = table.get(key.getBytes());
+            Table.GetResult getResult = table.get(key.getBytes());
+            Row retrievedRow = getResult.row;
             assertNotNull(retrievedRow, "Should retrieve row with key: " + key);
             assertArrayEquals(key.getBytes(), retrievedRow.getPrimaryKey(), "Retrieved row should have correct key");
         }
@@ -155,12 +158,46 @@ public class TableTest {
         // Verify we can read back all the rows
         for (int i = 0; i < insertedRows; i++) {
             String key = "key" + i;
-            Row retrievedRow = largeDataTable.get(key.getBytes());
+            Table.GetResult getResult = largeDataTable.get(key.getBytes());
+            Row retrievedRow = getResult.row;
             assertNotNull(retrievedRow, "Should retrieve row with key: " + key);
         }
         
         // Verify the total number of rows matches what we inserted
         assertEquals(targetRows, largeDataTable.size(), "Table size should match number of inserted rows");
+    }
+
+    @Test
+    public void testPageAccessCountForTenthPage(@TempDir Path tempDir) throws Exception {
+        // Create a table
+        Table table = new Table("deep_access_test", tempDir);
+
+        // Insert enough rows to fill 10 pages
+        int pageSize = Page.PAGE_SIZE;
+        int approxRowSize = 400; // Make each row large to force more pages
+        int rowsPerPage = pageSize / approxRowSize;
+        int totalPages = 10;
+        int totalRows = rowsPerPage * totalPages;
+
+        // Insert rows
+        for (int i = 0; i < totalRows; i++) {
+            String key = "key" + i;
+            Row row = new Row(key.getBytes());
+            row.setAttribute("data", generateString(approxRowSize - 50));
+            assertTrue(table.insert(row), "Insert should succeed for row " + i);
+        }
+        table.save();
+
+        // Print total pages to verify
+        System.out.println("[TEST DEBUG] Total pages after insert: " + table.getTotalPages());
+
+        // Access the last row (should be in the 10th page if pages are chained/sequential)
+        String lastKey = "key" + (totalRows - 1);
+        Table.GetResult result = table.get(lastKey.getBytes());
+        assertNotNull(result.row, "Should find the last inserted row");
+        int accessCount = result.pagesAccessed;
+        System.out.println("Page accesses for last key: " + accessCount);
+        assertEquals(12, accessCount, "Accessing the last key should traverse 12 pages");
     }
 
     /**

@@ -74,7 +74,6 @@ public class Page {
         header = PageHeader.forLeafPage(buffer, pageId);
         this.slotRegion = new SlotRegion(buffer, PageHeader.headerSize(), SLOT_SIZE, header);
         this.dataRegion = new DataRegion(buffer, PAGE_SIZE);
-        
         System.out.println("Created new Page with ID: " + pageId);
         System.out.println("  Page size: " + PAGE_SIZE + " bytes");
         System.out.println("  Header size: " + PageHeader.headerSize() + " bytes");
@@ -83,41 +82,6 @@ public class Page {
 
     public long getPageId() {
         return header.pageId();
-    }
-
-    /**
-     * Initializes a database file with the specified number of pages.
-     * Creates the file if it doesn't exist, or extends it if it's too small.
-     *
-     * @param filePath Path to the database file
-     * @param numPages Number of pages to allocate
-     * @return FileChannel for the initialized file
-     * @throws IOException If an I/O error occurs
-     */
-    public static FileChannel init(Path filePath, int numPages) throws IOException {
-        // Open file for read and write, creating it if it doesn't exist
-        FileChannel channel = FileChannel.open(filePath,
-                StandardOpenOption.READ,
-                StandardOpenOption.WRITE,
-                StandardOpenOption.CREATE);
-
-        // For init, we want exact sizing
-        ensureExactFileSize(channel, numPages);
-
-        return channel;
-    }
-
-    /**
-     * Ensures that the file has exactly the size needed for the specified number of pages.
-     * This is used during initialization when we want precise control over the file size.
-     */
-    private static void ensureExactFileSize(FileChannel fileChannel, int numPages) throws IOException {
-        long requiredSize = getSize((long) numPages);
-        long currentSize = fileChannel.size();
-
-        if (currentSize != requiredSize) {
-            allocateSpace(fileChannel, requiredSize);
-        }
     }
 
     private static long getSize(long numPages) {
